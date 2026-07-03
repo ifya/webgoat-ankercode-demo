@@ -58,7 +58,6 @@ jobs:
             ghcr.io/ifya/ankercode:latest \
             scan /scan \
               --project "webgoat-demo" \
-              --output-dir /scan/ankercode \
               --quiet
         continue-on-error: true
 
@@ -69,7 +68,6 @@ jobs:
             -v "${{ github.workspace }}:/scan" \
             ghcr.io/ifya/ankercode:latest \
             report /scan \
-              --output-dir /scan/ankercode \
               --pdf
         continue-on-error: true
 
