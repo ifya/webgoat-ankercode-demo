@@ -68,7 +68,7 @@ jobs:
             -v "${{ github.workspace }}:/scan" \
             ghcr.io/ifya/ankercode:latest \
             report /scan \
-              --pdf
+              --html
         continue-on-error: true
 
       # ── Upload all artifacts (always, even on policy gate) ────────────────
@@ -81,7 +81,7 @@ jobs:
             ankercode/findings.json
             ankercode/sbom.cyclonedx.json
             ankercode/policy-result.json
-            ankercode/report-*.pdf
+            ankercode/report-*.html
           retention-days: 90
 
       # ── Upload to AnkerCode dashboard (opt-in via repo secret) ───────────
