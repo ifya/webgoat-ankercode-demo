@@ -26,7 +26,7 @@ jobs:
         run: echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
 
       - name: Cache Trivy databases
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/trivy
           key: trivy-db-${{ runner.os }}-${{ steps.date.outputs.date }}
@@ -34,7 +34,7 @@ jobs:
 
       # ── Cache Maven (WebGoat is a Maven project) ──────────────────────────
       - name: Cache Maven repository
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.m2/repository
           key: maven-${{ hashFiles('**/pom.xml') }}
