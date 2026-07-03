@@ -1,0 +1,148 @@
+name: AnkerCode Security Scan
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    - cron: '0 3 * * 1'   # weekly Monday 03:00 UTC — keeps findings fresh
+  workflow_dispatch:
+
+jobs:
+  scan:
+    name: AnkerCode — Scan & Report
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read   # pull ghcr.io/ifya/ankercode
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Cache Trivy vuln DB (refreshes daily) ─────────────────────────────
+      - name: Set daily date stamp
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Trivy databases
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}-${{ steps.date.outputs.date }}
+          restore-keys: trivy-db-${{ runner.os }}-
+
+      # ── Cache Maven (WebGoat is a Maven project) ──────────────────────────
+      - name: Cache Maven repository
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: maven-
+
+      # ── Log in to GHCR to pull the AnkerCode image ───────────────────────
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Run AnkerCode scan ────────────────────────────────────────────────
+      - name: Scan
+        id: scan
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/scan" \
+            -v ~/.cache/trivy:/root/.cache/trivy \
+            ghcr.io/ifya/ankercode:latest \
+            scan /scan \
+              --project "webgoat-demo" \
+              --output-dir /scan/ankercode \
+              --quiet
+        continue-on-error: true
+
+      # ── Generate PDF report ───────────────────────────────────────────────
+      - name: Generate report
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/scan" \
+            ghcr.io/ifya/ankercode:latest \
+            report /scan \
+              --output-dir /scan/ankercode \
+              --pdf
+        continue-on-error: true
+
+      # ── Upload all artifacts (always, even on policy gate) ────────────────
+      - name: Upload report artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ankercode-report-${{ github.sha }}
+          path: |
+            ankercode/findings.json
+            ankercode/sbom.cyclonedx.json
+            ankercode/policy-result.json
+            ankercode/report-*.pdf
+          retention-days: 90
+
+      # ── Upload to AnkerCode dashboard (opt-in via repo secret) ───────────
+      - name: Upload to AnkerCode dashboard
+        if: ${{ env.ANKERCODE_API_KEY != '' }}
+        env:
+          ANKERCODE_API_KEY: ${{ secrets.ANKERCODE_API_KEY }}
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/scan" \
+            -e ANKERCODE_API_KEY \
+            ghcr.io/ifya/ankercode:latest \
+            upload /scan \
+              --org "${{ vars.ANKERCODE_ORG }}" \
+              --project "webgoat-demo" \
+              --repo-url "${{ github.server_url }}/${{ github.repository }}"
+
+      # ── Print findings summary to the Actions log ─────────────────────────
+      - name: Print findings summary
+        if: always()
+        run: |
+          if [ -f ankercode/findings.json ]; then
+            python3 - <<'EOF'
+          import json, pathlib, sys
+
+          data   = json.loads(pathlib.Path("ankercode/findings.json").read_text())
+          policy = json.loads(pathlib.Path("ankercode/policy-result.json").read_text()) \
+                   if pathlib.Path("ankercode/policy-result.json").exists() else {}
+
+          findings = data.get("findings", [])
+          by_type  = {}
+          by_sev   = {}
+          for f in findings:
+              by_type[f["type"]] = by_type.get(f["type"], 0) + 1
+              by_sev[f["severity"]] = by_sev.get(f["severity"], 0) + 1
+
+          print("┌─────────────────────────────────────────┐")
+          print("│         AnkerCode Findings Summary      │")
+          print("├─────────────────────────────────────────┤")
+          for k, v in sorted(by_type.items()):
+              print(f"│  {k:<20} {v:>4} findings            │")
+          print("├─────────────────────────────────────────┤")
+          for sev in ["critical","high","medium","low","info"]:
+              c = by_sev.get(sev, 0)
+              if c: print(f"│  {sev:<20} {c:>4}                    │")
+          print("├─────────────────────────────────────────┤")
+          status = policy.get("status", "n/a")
+          v_count = len(policy.get("violations", []))
+          w_count = len(policy.get("warnings",  []))
+          print(f"│  Policy status:   {status:<22}│")
+          print(f"│  Violations:      {v_count:<22}│")
+          print(f"│  Warnings:        {w_count:<22}│")
+          print("└─────────────────────────────────────────┘")
+          EOF
+          fi
+
+      # ── Fail workflow if policy gate triggered ────────────────────────────
+      - name: Enforce policy gate
+        if: steps.scan.outcome == 'failure'
+        run: |
+          echo "::error::AnkerCode policy gate — blocking violations found. See report artifact."
+          exit 1
